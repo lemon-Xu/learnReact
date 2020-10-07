@@ -14,6 +14,8 @@ const Upate = "Update"; // 表示当前节点有更新
 const Delection = "Delection"; // 表示当前节点要被删除
 const PlacementAndUpdate = "PlacementAndUpdate"; // 一般是节点换位置同时更新了
 
+let nextUnitOfWork = null; //
+
 class FiberNode {
   constructor(tag, key, pendingProps) {
     this.tag = tag; // 当前fiber的类型
@@ -72,6 +74,10 @@ function createWorkInProgress(current, pendingProps) {
 
   // 源码中没有这个判断，在执行createWorkInProgress之前，调用了一个叫做enqueueUpdate的方法，
   // 这个方法中，它将fiber和current.alternate上的updateQueue的新状态，进行了同步。
+
+  // 只有初次渲染的时候，会给组件的实例一个属性，指向它的fiber，以后这个fiber，就不会再改变了
+
+  //
   if (
     !!workInProgress &&
     !!workInProgress.updateQueue &&
@@ -86,6 +92,45 @@ function createWorkInProgress(current, pendingProps) {
   workInProgress.sibling = current.sibling;
   workInProgress.index = current.index;
   return workInProgress;
+}
+
+function beginWork(workInProgress) {
+  let next;
+  return next;
+}
+
+function completeUnitOfWork(workInProgress) {
+  while (true) {
+    let returnFiber = workInProgress.return; // 父节点
+    let siblingFiber = workInProgress.sibling; // 兄弟节点
+
+    if (!!siblingFiber) {
+      return siblingFiber;
+    }
+    // 如果有父节点，回溯，检查当前节点的父节点是否有兄弟节点和父节点
+    if (!!returnFiber) {
+      workInProgress = returnFiber;
+      continue;
+    }
+  }
+}
+
+function performUnitOfWork(workInProgress) {
+  let next = beginWork(workInProgress); // 创建当前节点的子节点
+
+  if (next === null) {
+    next = completeUnitOfWork(workInProgress);
+  }
+
+  return next;
+}
+
+// 循环创建Fiber树
+function workLoop(nextUnitOfWork) {
+  // 有下一个要被调度的节点
+  while (!!nextUnitOfWork) {
+    nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
+  }
 }
 
 class ReactRoot {
@@ -111,7 +156,12 @@ class ReactRoot {
   render(reactElement, callback) {
     let root = this._internalRoot;
 
-    let workInProgress = createWorkInProgress(root.current, pendingProps);
+    let workInProgress = createWorkInProgress(root.current, null);
+    // react源码中是先把element放到current中。
+    workInProgress.memoizedState = { element: reactElement };
+
+    nextUnitOfWork = workInProgress;
+    workLoop(nextUnitOfWork);
   }
 }
 
