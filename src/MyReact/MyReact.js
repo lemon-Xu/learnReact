@@ -1,3 +1,4 @@
+import { type } from "os";
 import { textChangeRangeIsUnchanged } from "typescript";
 
 let isFirstRender = false;
@@ -15,6 +16,10 @@ const Delection = "Delection"; // 表示当前节点要被删除
 const PlacementAndUpdate = "PlacementAndUpdate"; // 一般是节点换位置同时更新了
 
 let nextUnitOfWork = null; //
+
+const ClassComponentUpdater = {
+  enqueueSetState() {},
+};
 
 class FiberNode {
   constructor(tag, key, pendingProps) {
@@ -94,9 +99,223 @@ function createWorkInProgress(current, pendingProps) {
   return workInProgress;
 }
 
+function reconcileSingleElement(returnFiber, element) {
+  let type = element.type;
+  let flag = null;
+  if (element.$$typeof === Symbol.for("react.element")) {
+    if (typeof type === "function") {
+      if (type.prototype && type.prototype.isReactComponent) {
+        flag = ClassComponent;
+      } else if (typeof type === "string") {
+        flag = HostComponent;
+      }
+    } else if (typeof type === "string") {
+      flag = HostComponent;
+    }
+
+    let fiber = createFiber(flag, element.key, element.props);
+    fiber.type = type;
+    fiber.return = returnFiber;
+    return fiber;
+  }
+}
+
+function reconcileSingleTextNode(workInProgress, reactElement) {}
+
+function reconcileChildrenArray(workInProgress, nextChildren) {
+  // 这个方法中，要通过index和key值去尽可能多的找到可以复用的dom节点
+  // 这个函数就是react中最最复杂的diff算法
+  let nowWorkInProgress = null;
+  if (isFirstRender) {
+    nextChildren.forEeach((reactElement, index) => {
+      if (index === 0) {
+        if (
+          typeof reactElement === "string" ||
+          typeof reactElement === "number"
+        ) {
+          workInProgress.child = reconcileSingleTextNode(
+            workInProgress,
+            reactElement
+          );
+        } else {
+          workInProgress.child = reconcileSingleElement(
+            workInProgress,
+            reactElement
+          );
+        }
+        nowWorkInProgress = workInProgress.child;
+      } else {
+        if (
+          typeof reactElement === "string" ||
+          typeof reactElement === "number"
+        ) {
+          workInProgress.sibling = reconcileSingleTextNode(
+            workInProgress,
+            reactElement
+          );
+        } else {
+          workInProgress.sibling = reconcileSingleElement(
+            workInProgress,
+            reactElement
+          );
+        }
+        nowWorkInProgress = nowWorkInProgress.sibling;
+      }
+    });
+    return workInProgress.child;
+  }
+}
+
+function reconcileChildrenFiber(workInProgress, nextChildren) {
+  if (typeof nextChildren === "object" && !!nextChildren.$$typeof) {
+    // 说明它是一个独生子，并且是react元素
+    return reconcileSingleElement(workInProgress, nextChildren);
+  }
+  if (nextChildren instanceof Array) {
+    // retrun reconcileChildrenArray(workInProgress, nextChildren)
+  }
+  if (typeof nextChildren === "string" || typeof nextChildren === "number") {
+    // retrun reconcileSingleTextNode(workInProgress, nextChildren)
+  }
+  return null;
+}
+
+function reconcileChildren(workInProgress, nextChildren) {
+  if (isFirstRender && !!workInProgress.alternate) {
+    workInProgress.child = reconcileChildrenFiber(workInProgress, nextChildren);
+    workInProgress.child.effectTag = Placement;
+  } else {
+    workInProgress.child = reconcileChildrenFiber(workInProgress, nextChildren);
+  }
+}
+
+function updateHostRoot(workInProgress) {
+  let children = workInProgress.memoizedState.element;
+  reconcileChildren(workInProgress, children);
+}
+
+function updateClassComponent(workInProgress) {
+  let component = workInProgress.type;
+  let nextProps = workInProgress.pendingProps;
+
+  if (!!component.defaultProps) {
+    nextProps = Object.assign({}, component.defaultProps, nextProps);
+  }
+  let shouldUpdate = null;
+  let instance = workInProgress.stateNode;
+  if (!instance) {
+    // 没有实例说明是初次渲染，或者是一个新创建的节点。
+    instance = new component(nextProps);
+    workInProgress.memoizedState = instance.state;
+    instance._reactInternalFiber = workInProgress;
+    instance.updater = ClassComponentUpdater;
+
+    // 用来代替componentWillReceiveProps
+    let getDeriveStateFromProps = component.getDerivedStateFromProps;
+    if (!!getDeriveStateFromProps) {
+      let prevState = workInProgress.memoizedState;
+      let newState = getDeriveStateFromProps(nextProps, prevState);
+      if (newState === null || newState === undefined) {
+        if (typeof newState === "object" && !newState instanceof Array) {
+          workInProgress.memoizedState = Object.assign({}, nextProps, newState);
+        }
+      }
+      instance.state = workInProgress.memoizedState;
+    }
+    // 处理一些声明周期之类的
+
+    shouldUpdate = true;
+  } else {
+    // 说明不是初次渲染
+  }
+
+  let nextChildren = instance.render();
+  return reconcileChildren(workInProgress, nextChildren);
+}
+
+function updateHostComponent(workInProgress) {
+  let nextProps = workInProgress.pendingProps;
+  let nextChildren = nextProps.children;
+
+  // 对于文本类型的节点，不一定每次都创建对应的fiber，当这个节点有兄弟节点的时候会创建对应的fiber，当它是独生子的时候不会创建fiber直接返回null
+  if (typeof nextChildren === "string" || typeof nextChildren === "number") {
+    nextChildren = null;
+  }
+
+  return reconcileChildren(workInProgress, nextChildren);
+}
+
 function beginWork(workInProgress) {
-  let next;
+  let tag = workInProgress.tag;
+  let next = null;
+
+  if (tag === HostRoot) {
+    next = updateHostRoot(workInProgress);
+  } else if (tag === ClassComponent) {
+    next = updateClassComponent(workInProgress);
+  } else if (tag === HostComponent) {
+    next = updateHostComponent(workInProgress);
+  } else if (tag === HostText) {
+    next = null;
+  }
+
   return next;
+}
+
+function completeWork(workInProgress) {
+  // 1. 创建真实的dom实例
+  let tag = workInProgress.tag;
+  let instance = workInProgress.stateNode;
+  if (tag === HostComponent) {
+    if (!instance) {
+      // 说明这个节点是初次创建
+      // 也可能是一个新创建的一个节点
+      let domElement = document.createElement(workInProgress.type);
+      domElement.__reactInternalFiber = workInProgress;
+      workInProgress.stateNode = domElement;
+
+      // 2. 对子节点进行插入
+      let node = workInProgress.child;
+      wapper: while (!!node) {
+        let tag = node.tag;
+        if (tag === HostComponent || tag === HostText) {
+          domElement.appendChild(node.stateNode);
+        } else {
+          node.child.return = node;
+          node = node.child;
+          continue;
+        }
+
+        if (node === workInProgress) break;
+
+        // 如果当前节点没有兄弟节点，向上查找兄弟节点
+        while (node.sibling === null) {
+          if (node.return === null || node.return === workInProgress) {
+            break wapper; // break外面的while（wapper）
+          }
+          node = node.return;
+        }
+        node.sibling.return = node.return;
+        node = node.sibling;
+      }
+
+      // 3. 把属性给它
+      let props = workInProgress.pendingProps;
+      for (let propKey in props) {
+        let propValue = props[propKey];
+        // 独生子
+        if (propKey === "children") {
+          if (typeof propValue === "string" || typeof propValue === "number") {
+            domElement.textContent = propValue;
+          }
+        } else if (propKey === "style") {
+          for(){
+
+          }
+        }
+      }
+    }
+  }
 }
 
 function completeUnitOfWork(workInProgress) {
@@ -104,9 +323,13 @@ function completeUnitOfWork(workInProgress) {
     let returnFiber = workInProgress.return; // 父节点
     let siblingFiber = workInProgress.sibling; // 兄弟节点
 
-    if (!!siblingFiber) {
-      return siblingFiber;
-    }
+    // 1. 创建真实的dom实例
+    // 2. 对子节点进行插入
+    // 3. 把属性给它
+    completeWork(workInProgress);
+
+    if (!!siblingFiber) return siblingFiber;
+
     // 如果有父节点，回溯，检查当前节点的父节点是否有兄弟节点和父节点
     if (!!returnFiber) {
       workInProgress = returnFiber;
