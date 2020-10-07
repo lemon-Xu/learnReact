@@ -2,6 +2,8 @@ import { type } from "os";
 import { textChangeRangeIsUnchanged } from "typescript";
 
 let isFirstRender = false;
+let isWorking = false;
+let isCommitting = false;
 
 const HostRoot = "HostRoot"; // 标识RootFiber类型
 const ClassComponent = "ClassComponent"; // 标识组件的类型
@@ -11,11 +13,19 @@ const FunctionComponent = "FunctionComponent"; // 标识函数的组件类型
 
 const NoWork = "NoWork"; // 表示当前节点没有工作，初始都是NoWork
 const Placement = "Placement"; // 表示这个节点是新插入的
-const Upate = "Update"; // 表示当前节点有更新
-const Delection = "Delection"; // 表示当前节点要被删除
+const Update = "Update"; // 表示当前节点有更新
+const Deletion = "Deletion"; // 表示当前节点要被删除
 const PlacementAndUpdate = "PlacementAndUpdate"; // 一般是节点换位置同时更新了
 
 let nextUnitOfWork = null; //
+
+let eventsName = {
+  onClick: "click",
+  onChange: "change",
+  onInput: "input",
+
+  // ...
+};
 
 const ClassComponentUpdater = {
   enqueueSetState() {},
@@ -36,6 +46,8 @@ class FiberNode {
     this.memoizedProps = null; // 表示当前fiber的props
     this.pendingProps = pendingProps; // 表示新进来的props
     this.effectTag = NoWork; // 表示当前节点要进行何种更新
+
+    // 链表是从firstEffect指向
     this.firstEffect = null; // 表示当前节点的有更新的第一个子节点
     this.lastEffect = null; // 表示当前节点有更新的最后一个子节点
     this.nextEffect = null; // 表示下一个要更新的子节点
@@ -120,7 +132,11 @@ function reconcileSingleElement(returnFiber, element) {
   }
 }
 
-function reconcileSingleTextNode(workInProgress, reactElement) {}
+function reconcileSingleTextNode(returnFiber, text) {
+  let fiber = createFiber(HostText, null, text);
+  fiber.return = returnFiber;
+  return fiber;
+}
 
 function reconcileChildrenArray(workInProgress, nextChildren) {
   // 这个方法中，要通过index和key值去尽可能多的找到可以复用的dom节点
@@ -309,11 +325,35 @@ function completeWork(workInProgress) {
             domElement.textContent = propValue;
           }
         } else if (propKey === "style") {
-          for(){
-
+          for (let stylePropKey in propValue) {
+            if (!propValue.hasOwnProperty(stylePropKey)) continue; // 原型链上的属性
+            let styleValue = propValue[stylePropKey].trim(); // 把两边空格去掉
+            if (stylePropKey === "float") {
+              stylePropKey = "cssFloat";
+            }
+            domElement.style[stylePropKey] = styleValue;
           }
+        } else if (eventsName.hasOwnProperty(propKey)) {
+          // react中所有写在JSX模板上的事件都是合成事件。
+          // 合成事件不会理解执行传进来的函数，而是先执行一些其他操作。
+          // 比如说事件源对象做一些处理进行合成，会把你所有的事件都代理到根节点上。
+          // 做事件代理的好处就是全局你可能只用绑定一个事件就可以了。
+          // 再比如它内部会自己写个什么阻止冒泡的方式或阻止默认的方法。
+          let event = props[propKey];
+          domElement.addEventListener(eventsName[propKey], event, false);
+        } else {
+          domElement.setAttibute(propKey, propValue);
         }
       }
+    }
+  } else if (tag === HostText) {
+    let oldText = workInProgress.memoizedProps;
+    let newText = workInProgress.pendingProps;
+    if (!instance) {
+      instance = document.createTextNode(newText);
+      workInProgress.stateNode = instance;
+    } else {
+      // 不是初次渲染
     }
   }
 }
@@ -327,6 +367,18 @@ function completeUnitOfWork(workInProgress) {
     // 2. 对子节点进行插入
     // 3. 把属性给它
     completeWork(workInProgress);
+
+    let effectTag = workInProgress.effectTag;
+    let hashChange =
+      effectTag === Update || Deletion || Placement || PlacementAndUpdate;
+    if (hashChange) {
+      if (!!returnFiber.lastEffect) {
+        returnFiber.lastEffect.nextEffect = workInProgress;
+      } else {
+        returnFiber.firstEffect = workInProgress;
+      }
+      returnFiber.lastEffect = workInProgress;
+    }
 
     if (!!siblingFiber) return siblingFiber;
 
@@ -354,6 +406,83 @@ function workLoop(nextUnitOfWork) {
   while (!!nextUnitOfWork) {
     nextUnitOfWork = performUnitOfWork(nextUnitOfWork);
   }
+}
+
+function commitRoot(root, finishedWord) {
+  isWorking = true;
+  isCommitting = true;
+
+  // 三个while循环。
+  // 第一个循环，用来执行getSnapshotBeforeUpdate。
+  // 第二个循环，真正用来操作页面，将有更新的节点，该插入的插入，该更新的更新，该删除的删除。
+  // 第三个循环，执行剩下的声明周期， componentDidUpdate或者componentDidMount
+
+  let firstEffect = finishedWord.firstEffect;
+  let nextEffect = null;
+
+  nextEffect = firstEffect;
+  //
+  // while(){
+
+  // }
+
+  nextEffect = firstEffect;
+  while (!!nextEffect) {
+    let effectTag = nextEffect.effectTag;
+    if (effectTag.includes(Placement)) {
+      // 说明是新插入的节点
+      // 1. 先找到一个能被插进来的父节点
+      // 2. 再找能往父节点中插的子节点
+      let parentFiber = nextEffect.return;
+      let parent = null; // 父节点真实对应的dom节点
+      while (!!parentFiber) {
+        let tag = parentFiber.tag;
+        if (tag === HostComponent || tag === HostRoot) {
+          break;
+        }
+        if (parentFiber.tag === HostComponent) {
+          parent = parentFiber.stateNode;
+        } else if (parentFiber.tag === HostRoot) {
+          parent = parentFiber.stateNode.container;
+        }
+
+        if (isFirstRender) {
+          let tag = nextEffect.tag;
+          if (tag === HostComponent || tag == HostText) {
+            parent.appendChild(nextEffect.stateNode);
+          } else {
+            let child = nextEffect;
+            while (true) {
+              let tag = child.tag;
+              if (tag === HostComponent || tag === HostText) {
+                break;
+              }
+              child = child.child;
+            }
+            parent.appendChild(child.stateNode);
+          }
+        }
+      }
+    } else if (effectTag === Update) {
+      // 说明属性更新
+    } else if (effectTag === Deletion) {
+      //该节点要被删除
+    } else if (effectTag === PlacementAndUpdate) {
+      // 说明该节点可能是换了位置并属性上有更新
+    }
+  }
+
+  nextEffect = firstEffect;
+  // while(){
+
+  // }
+  isWorking = false;
+  isCommitting = false;
+}
+
+function completeRoot(root, finishedWord) {
+  root.finishedWord = null;
+  commitRoot(root, finishedWord);
 }
 
 class ReactRoot {
@@ -385,6 +514,11 @@ class ReactRoot {
 
     nextUnitOfWork = workInProgress;
     workLoop(nextUnitOfWork);
+
+    root.finishedWord = root.current.alternate;
+    if (!!root.finishedWord) {
+      compeleteRoot(root, root.finishedWord);
+    }
   }
 }
 
